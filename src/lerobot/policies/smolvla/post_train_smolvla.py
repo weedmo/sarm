@@ -194,7 +194,9 @@ def post_train_smolvla(args):
     if args.rename_map:
         import json as _json
 
-        rename_map = _json.loads(args.rename_map)
+        # Clean up whitespace/newlines from shell line continuations
+        clean_str = "".join(args.rename_map.split())
+        rename_map = _json.loads(clean_str)
         logging.info(f"Using rename_map: {rename_map}")
 
     # Step 3: Load SmolVLA policy

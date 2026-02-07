@@ -85,7 +85,10 @@ class SmolVLMWithExpertModel(nn.Module):
         else:
             config = AutoConfig.from_pretrained(model_id)
             self.vlm = SmolVLMForConditionalGeneration(config=config)
-        self.processor = AutoProcessor.from_pretrained(model_id)
+        try:
+            self.processor = AutoProcessor.from_pretrained(model_id)
+        except Exception:
+            self.processor = AutoProcessor.from_pretrained(model_id, local_files_only=True)
         if num_vlm_layers > 0:
             print(f"Reducing the number of VLM layers to {num_vlm_layers} ...")
             self.get_vlm_model().text_model.layers = self.get_vlm_model().text_model.layers[:num_vlm_layers]
