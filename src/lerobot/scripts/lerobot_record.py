@@ -493,6 +493,7 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
         with VideoEncodingManager(dataset):
             recorded_episodes = 0
             while recorded_episodes < cfg.dataset.num_episodes and not events["stop_recording"]:
+                events["exit_early"] = False
                 log_say(f"Recording episode {dataset.num_episodes}", cfg.play_sounds)
                 record_loop(
                     robot=robot,
@@ -511,6 +512,10 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
                     display_data=cfg.display_data,
                     display_compressed_images=display_compressed_images,
                 )
+
+                # Capture and reset the save_without_task flag
+                episode_without_task = events.get("save_without_task", False)
+                events["save_without_task"] = False
 
                 # Execute a few seconds without recording to give time to manually reset the environment
                 # Skip reset for the last episode to be recorded
@@ -543,6 +548,10 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
                     dataset.clear_episode_buffer()
                     continue
 
+                if episode_without_task:
+                    log_say("Saving episode without task instruction", cfg.play_sounds)
+                    dataset.episode_buffer["task"] = [""] * len(dataset.episode_buffer["task"])
+
                 dataset.save_episode()
                 recorded_episodes += 1
     finally:
@@ -559,7 +568,7 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
         if not is_headless() and listener:
             listener.stop()
 
-        if cfg.dataset.push_to_hub:
+        if cfg.dataset.push_to_hub and dataset is not None:
             dataset.push_to_hub(tags=cfg.dataset.tags, private=cfg.dataset.private)
 
         log_say("Exiting", cfg.play_sounds)

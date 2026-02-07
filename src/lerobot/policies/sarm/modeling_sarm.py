@@ -390,7 +390,7 @@ class SARMRewardModel(PreTrainedPolicy):
             n_layers=config.num_layers,
             n_heads=config.num_heads,
             dropout=config.dropout,
-            num_cameras=1,  # Single camera for now
+            num_cameras=config.num_cameras,
             num_classes_sparse=config.num_sparse_stages,
             num_classes_dense=config.num_dense_stages or config.num_sparse_stages,
         )
@@ -403,7 +403,7 @@ class SARMRewardModel(PreTrainedPolicy):
             n_layers=config.num_layers,
             n_heads=config.num_heads,
             dropout=config.dropout,
-            num_cameras=1,
+            num_cameras=config.num_cameras,
         )
 
         self.stage_model.to(self.device)
@@ -522,9 +522,17 @@ class SARMRewardModel(PreTrainedPolicy):
             single_sample = False
 
         batch_size = video_embeddings.shape[0]
-        seq_len = video_embeddings.shape[1]
 
         scheme = head_mode
+
+        # Reshape video to (B, N, T, D) for multi-camera format
+        # Handle both old (B, T, D) and new (B, N, T, D) inputs
+        if video_embeddings.dim() == 3:
+            img_seq = video_embeddings.unsqueeze(1).to(self.device)
+        else:
+            img_seq = video_embeddings.to(self.device)
+
+        seq_len = img_seq.shape[2]  # T dimension after ensuring 4D
 
         # Default lengths if not provided
         if lengths is None:
@@ -532,9 +540,6 @@ class SARMRewardModel(PreTrainedPolicy):
         elif isinstance(lengths, np.ndarray):
             lengths = torch.tensor(lengths, dtype=torch.int32)
 
-        # Reshape video to (B, N, T, D) for multi-camera format
-        # Currently single camera: (B, T, D) -> (B, 1, T, D)
-        img_seq = video_embeddings.unsqueeze(1).to(self.device)
         lang_emb = text_embeddings.to(self.device)
         state = (
             state_features.to(self.device)
@@ -732,7 +737,14 @@ class SARMRewardModel(PreTrainedPolicy):
             state_features = state_features.to(self.device)
 
         batch_size = video_features.shape[0]
-        seq_len = video_features.shape[1]
+
+        # Reshape video to (B, N, T, D) - handle both old (B, T, D) and new (B, N, T, D)
+        if video_features.dim() == 3:
+            img_emb = video_features.unsqueeze(1)
+        else:
+            img_emb = video_features
+
+        seq_len = img_emb.shape[2]  # T dimension after ensuring 4D
 
         # Get lengths (default to full sequence)
         lengths = observation.get("lengths")
@@ -740,9 +752,6 @@ class SARMRewardModel(PreTrainedPolicy):
             lengths = torch.full((batch_size,), seq_len, dtype=torch.int32, device=self.device)
         else:
             lengths = lengths.to(self.device)
-
-        # Reshape video to (B, N, T, D) - single camera
-        img_emb = video_features.unsqueeze(1)
 
         # Pad state to max_state_dim
         if state_features is None:

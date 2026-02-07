@@ -135,6 +135,7 @@ def init_keyboard_listener():
     events["exit_early"] = False
     events["rerecord_episode"] = False
     events["stop_recording"] = False
+    events["save_without_task"] = False
 
     if is_headless():
         logging.warning(
@@ -154,6 +155,10 @@ def init_keyboard_listener():
             elif key == keyboard.Key.left:
                 print("Left arrow key pressed. Exiting loop and rerecord the last episode...")
                 events["rerecord_episode"] = True
+                events["exit_early"] = True
+            elif key == keyboard.Key.space:
+                print("Space key pressed. Exiting loop and saving episode without task instruction...")
+                events["save_without_task"] = True
                 events["exit_early"] = True
             elif key == keyboard.Key.esc:
                 print("Escape key pressed. Stopping data recording...")

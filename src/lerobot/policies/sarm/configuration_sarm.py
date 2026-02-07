@@ -87,7 +87,8 @@ class SARMConfig(PreTrainedConfig):
 
     pretrained_model_path: str | None = None
     device: str | None = None
-    image_key: str = OBS_IMAGES + ".top"  # Key for image used from the dataset
+    image_key: str | None = None  # Deprecated: use image_keys instead (kept for backward compat)
+    image_keys: list[str] | None = None  # List of image observation keys (one per camera)
     state_key: str = OBS_STATE
 
     # Populated by the processor (video_features, state_features, text_features)
@@ -132,11 +133,25 @@ class SARMConfig(PreTrainedConfig):
             self.sparse_subtask_names = ["task"]
             self.sparse_temporal_proportions = [1.0]
 
+        # Resolve image_keys from image_key for backward compatibility
+        if self.image_keys is not None:
+            # New path: explicit multi-camera list
+            pass
+        elif self.image_key is not None:
+            # Old checkpoint path: single image_key string
+            self.image_keys = [self.image_key]
+        else:
+            # Default: single top camera
+            self.image_keys = [OBS_IMAGES + ".top"]
+
+        # Keep image_key in sync for backward compat (first camera)
+        self.image_key = self.image_keys[0]
+
         self.input_features = {}
         self.output_features = {}
 
-        if self.image_key:
-            self.input_features[self.image_key] = PolicyFeature(shape=(480, 640, 3), type=FeatureType.VISUAL)
+        for key in self.image_keys:
+            self.input_features[key] = PolicyFeature(shape=(480, 640, 3), type=FeatureType.VISUAL)
 
         self.input_features[self.state_key] = PolicyFeature(
             shape=(self.max_state_dim,),
@@ -238,6 +253,11 @@ class SARMConfig(PreTrainedConfig):
         rewind_deltas = [-self.frame_gap * (i + 1) for i in range(self.max_rewind_steps)]
 
         return obs_deltas + rewind_deltas
+
+    @property
+    def num_cameras(self) -> int:
+        """Number of cameras (image keys)."""
+        return len(self.image_keys)
 
     @property
     def action_delta_indices(self) -> None:

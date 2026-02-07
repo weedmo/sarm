@@ -65,7 +65,9 @@ class SARMEncodingProcessorStep(ProcessorStep):
     ):
         super().__init__()
         self.config = config
-        self.image_key = image_key or config.image_key
+        self.image_keys = config.image_keys
+        # Keep image_key for backward compat (first camera, used for rewind/lengths logic)
+        self.image_key = self.image_keys[0]
         self.dataset_meta = dataset_meta
         self.dataset_stats = dataset_stats
         self.annotation_mode = config.annotation_mode
@@ -191,19 +193,17 @@ class SARMEncodingProcessorStep(ProcessorStep):
         frame_indices = np.atleast_1d(np.asarray(from_tensor_to_numpy(frame_index)))
         episode_indices = self._get_episode_indices(frame_indices, episode_index)
 
-        image = observation.get(self.image_key)
-        if isinstance(image, torch.Tensor):
-            image = image.cpu().numpy()
+        # Get first camera image to determine batch_size, total_frames, and rewind
+        first_image = observation.get(self.image_key)
+        if isinstance(first_image, torch.Tensor):
+            first_image = first_image.cpu().numpy()
+        if first_image.ndim == 4:
+            first_image = first_image[np.newaxis, ...]
+        elif first_image.ndim == 3:
+            first_image = first_image[np.newaxis, np.newaxis, ...]
 
-        # If 4D (T, C, H, W) from delta_timestamps, add batch dim
-        # If 3D (C, H, W) single frame, add batch and time dims
-        if image.ndim == 4:
-            image = image[np.newaxis, ...]  # (T, C, H, W) -> (1, T, C, H, W)
-        elif image.ndim == 3:
-            image = image[np.newaxis, np.newaxis, ...]  # (C, H, W) -> (1, 1, C, H, W)
-
-        batch_size = image.shape[0]
-        total_frames = image.shape[1]  # Should be 13: 9 obs + 4 rewind placeholders
+        batch_size = first_image.shape[0]
+        total_frames = first_image.shape[1]  # Should be 13: 9 obs + 4 rewind placeholders
         n_obs_steps = self.config.n_obs_steps
         max_rewind_steps = self.config.max_rewind_steps
         n_obs_frames = 1 + n_obs_steps  # 9 observation frames (including current)
@@ -227,15 +227,30 @@ class SARMEncodingProcessorStep(ProcessorStep):
         # Compute valid lengths: n_obs_frames + rewind_steps
         lengths = n_obs_frames + rewind_steps  # (B,)
 
-        # Apply rewind masking to images
-        # For frames beyond valid length, we mask with zeros (or copy last valid frame)
-        for b_idx in range(batch_size):
-            valid_len = lengths[b_idx].item()
-            if valid_len < total_frames:
-                image[b_idx, valid_len:] = 0  # Zero out frames beyond valid length
+        # Encode each camera independently, then stack along N dimension
+        per_camera_features = []
+        for cam_key in self.image_keys:
+            image = observation.get(cam_key)
+            if isinstance(image, torch.Tensor):
+                image = image.cpu().numpy()
 
-        # Encode images with CLIP
-        video_features = self._encode_images_batch(image)
+            if image.ndim == 4:
+                image = image[np.newaxis, ...]  # (T, C, H, W) -> (1, T, C, H, W)
+            elif image.ndim == 3:
+                image = image[np.newaxis, np.newaxis, ...]  # (C, H, W) -> (1, 1, C, H, W)
+
+            # Apply rewind masking to images
+            for b_idx in range(batch_size):
+                valid_len = lengths[b_idx].item()
+                if valid_len < total_frames:
+                    image[b_idx, valid_len:] = 0  # Zero out frames beyond valid length
+
+            # Encode with CLIP: (B, T, 512)
+            cam_features = self._encode_images_batch(image)
+            per_camera_features.append(cam_features)
+
+        # Stack cameras: list of (B, T, D) -> (B, N, T, D)
+        video_features = torch.stack(per_camera_features, dim=1)
         observation["video_features"] = video_features
 
         state_key = self.config.state_key
@@ -472,7 +487,7 @@ class SARMEncodingProcessorStep(ProcessorStep):
     ) -> dict[PipelineFeatureType, dict[str, PolicyFeature]]:
         """Add encoded features to the observation features."""
         features[PipelineFeatureType.OBSERVATION]["video_features"] = PolicyFeature(
-            type=FeatureType.VISUAL, shape=(self.config.num_frames, self.config.image_dim)
+            type=FeatureType.VISUAL, shape=(self.config.num_cameras, self.config.num_frames, self.config.image_dim)
         )
         features[PipelineFeatureType.OBSERVATION]["text_features"] = PolicyFeature(
             type=FeatureType.LANGUAGE, shape=(self.config.text_dim,)
