@@ -42,6 +42,26 @@ Usage:
         --single-task "Pick up the cup" \
         --robot-port /dev/ttyUSB0 --teleop-port /dev/ttyUSB1 \
         --num-episodes 5 --post-train-steps 5000 --enable-augmentation
+
+    # Quality-conditioned BC: collect with quality labels
+    python -m lerobot.policies.smolvla.intervention_collect_and_train \
+        --policy-path /path/to/smolvla \
+        --dataset-repo-id user/cond_bc_data \
+        --single-task "Pick up the cup" \
+        --quality-prefix-mode --collect-only
+
+    # Quality + intervention weighted training
+    python -m lerobot.policies.smolvla.intervention_collect_and_train \
+        --policy-path /path/to/smolvla \
+        --dataset-repo-id user/cond_bc_data \
+        --post-train-steps 5000 --quality-weight-mode --train-only
+
+    # Expert-conditioned inference for further collection
+    python -m lerobot.policies.smolvla.intervention_collect_and_train \
+        --policy-path /path/to/cond_bc_checkpoint \
+        --dataset-repo-id user/cond_bc_data \
+        --single-task "Pick up the cup" \
+        --inference-quality-prefix expert --quality-prefix-mode --collect-only
 """
 
 import argparse
@@ -82,6 +102,14 @@ from lerobot.utils.train_utils import get_step_identifier, update_last_checkpoin
 from lerobot.utils.utils import format_big_number, get_safe_torch_device, init_logging, log_say
 
 # ---------------------------------------------------------------------------
+# Quality label constants
+# ---------------------------------------------------------------------------
+
+QUALITY_LABELS = ("bad", "good", "expert")
+QUALITY_MAP = {"bad": 0, "good": 1, "expert": 2}
+QUALITY_MAP_INV = {v: k for k, v in QUALITY_MAP.items()}
+
+# ---------------------------------------------------------------------------
 # Keyboard listener with intervention mode
 # ---------------------------------------------------------------------------
 
@@ -102,6 +130,7 @@ def init_intervention_keyboard_listener():
         "stop_recording": False,
         "save_without_task": False,
         "intervention_mode": False,
+        "episode_quality": "good",
     }
 
     if is_headless():
@@ -133,6 +162,15 @@ def init_intervention_keyboard_listener():
                 events["intervention_mode"] = not events["intervention_mode"]
                 mode_str = "TELEOP (human)" if events["intervention_mode"] else "POLICY (auto)"
                 print(f"\n>>> Switched to {mode_str} mode <<<\n")
+            elif hasattr(key, "char") and key.char == "e":
+                events["episode_quality"] = "expert"
+                print("\n>>> Episode quality: EXPERT <<<\n")
+            elif hasattr(key, "char") and key.char == "g":
+                events["episode_quality"] = "good"
+                print("\n>>> Episode quality: GOOD <<<\n")
+            elif hasattr(key, "char") and key.char == "b":
+                events["episode_quality"] = "bad"
+                print("\n>>> Episode quality: BAD <<<\n")
         except Exception as e:
             print(f"Error handling key press: {e}")
 
@@ -162,6 +200,7 @@ def intervention_record_loop(
     dataset: LeRobotDataset,
     control_time_s: float,
     single_task: str,
+    inference_task: str | None = None,
 ) -> dict:
     """
     Record loop supporting both policy and teleop, switchable per-frame.
@@ -228,7 +267,7 @@ def intervention_record_loop(
                 preprocessor=preprocessor,
                 postprocessor=postprocessor,
                 use_amp=policy.config.use_amp,
-                task=single_task,
+                task=inference_task if inference_task else single_task,
                 robot_type=robot.robot_type,
             )
             act_processed = make_robot_action(action_tensor, dataset.features)
@@ -246,6 +285,7 @@ def intervention_record_loop(
             **action_frame,
             "task": single_task,
             "is_intervention": np.array([is_intervention], dtype=np.int64),
+            "episode_quality": np.array([QUALITY_MAP["good"]], dtype=np.int64),
         }
         dataset.add_frame(frame)
 
@@ -329,6 +369,13 @@ def run_collection_phase(args) -> str:
         "names": ["is_intervention"],
     }
 
+    # Add episode_quality feature
+    dataset_features["episode_quality"] = {
+        "dtype": "int64",
+        "shape": (1,),
+        "names": ["episode_quality"],
+    }
+
     # Create or resume dataset
     dataset_root = Path(args.output_dir) / "dataset" if args.output_dir else None
     try:
@@ -391,11 +438,19 @@ def run_collection_phase(args) -> str:
 
     listener, events = init_intervention_keyboard_listener()
 
+    # Build inference task with optional quality prefix
+    inference_task = None
+    if args.inference_quality_prefix:
+        inference_task = f"[{args.inference_quality_prefix}] {args.single_task}"
+        logging.info(f"Inference task (quality-conditioned): {inference_task}")
+
     logging.info(
         f"Recording {args.num_episodes} episodes at {args.fps} fps, "
         f"{args.episode_time_s}s per episode"
     )
     logging.info("Press 'i' to toggle intervention mode, '->' to end episode, 'Esc' to stop")
+    if args.quality_prefix_mode:
+        logging.info("Press 'e'=expert, 'g'=good, 'b'=bad to label episode quality")
 
     try:
         with VideoEncodingManager(dataset):
@@ -420,6 +475,7 @@ def run_collection_phase(args) -> str:
                     dataset=dataset,
                     control_time_s=args.episode_time_s,
                     single_task=args.single_task,
+                    inference_task=inference_task,
                 )
 
                 logging.info(
@@ -442,6 +498,26 @@ def run_collection_phase(args) -> str:
                 if episode_without_task:
                     log_say("Saving episode without task instruction", True)
                     dataset.episode_buffer["task"] = [""] * len(dataset.episode_buffer["task"])
+
+                # Apply episode quality label
+                quality = events.get("episode_quality", "good")
+                quality_int = QUALITY_MAP[quality]
+                num_frames = len(dataset.episode_buffer["episode_quality"])
+                dataset.episode_buffer["episode_quality"] = [
+                    np.array([quality_int], dtype=np.int64) for _ in range(num_frames)
+                ]
+                logging.info(f"Episode quality: {quality} ({quality_int})")
+
+                # Optionally prefix task string with quality label
+                if args.quality_prefix_mode and not episode_without_task:
+                    prefix = f"[{quality}] "
+                    dataset.episode_buffer["task"] = [
+                        f"{prefix}{t}" for t in dataset.episode_buffer["task"]
+                    ]
+                    logging.info(f"Task prefix applied: '{prefix}'")
+
+                # Reset quality for next episode
+                events["episode_quality"] = "good"
 
                 dataset.save_episode()
                 recorded_episodes += 1
@@ -483,6 +559,7 @@ def run_post_training_phase(args, dataset_repo_id: str) -> None:
     from accelerate.utils import DistributedDataParallelKwargs
 
     from lerobot.utils.intervention_weights import InterventionRABCWeights
+    from lerobot.utils.quality_weights import CombinedWeights, QualityWeights
 
     logging.info("=== Post-Training Phase ===")
 
@@ -593,6 +670,25 @@ def run_post_training_phase(args, dataset_repo_id: str) -> None:
         f"weights: intervention={args.intervention_weight}, policy={args.policy_base_weight}"
     )
 
+    # Optionally add quality-based weighting
+    weights_provider = intervention_weights
+    if args.quality_weight_mode:
+        quality_weight_map = None
+        if args.quality_weights:
+            quality_weight_map = json.loads(args.quality_weights)
+        quality_weights = QualityWeights(
+            dataset=dataset,
+            quality_weights=quality_weight_map,
+            device=device,
+        )
+        q_stats = quality_weights.get_stats()
+        logging.info(
+            f"Quality weights enabled: {q_stats['quality_distribution']}, "
+            f"weight map: {q_stats['quality_weights']}"
+        )
+        weights_provider = CombinedWeights(intervention_weights, quality_weights)
+        logging.info("Using CombinedWeights (intervention + quality)")
+
     # Setup Accelerator + DataLoader
     ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
     accelerator = Accelerator(
@@ -682,7 +778,7 @@ def run_post_training_phase(args, dataset_repo_id: str) -> None:
             optimizer_cfg.grad_clip_norm,
             accelerator=accelerator,
             lr_scheduler=lr_scheduler,
-            rabc_weights_provider=intervention_weights,
+            rabc_weights_provider=weights_provider,
         )
         train_tracker.step()
 
@@ -695,14 +791,21 @@ def run_post_training_phase(args, dataset_repo_id: str) -> None:
                 wandb_log_dict = train_tracker.to_dict()
                 if output_dict:
                     wandb_log_dict.update(output_dict)
-                w_stats = intervention_weights.get_stats()
-                wandb_log_dict.update(
-                    {
-                        "intervention_ratio": w_stats["intervention_ratio"],
-                        "intervention_weight": w_stats["intervention_weight"],
-                        "policy_base_weight": w_stats["policy_base_weight"],
-                    }
-                )
+                w_stats = weights_provider.get_stats()
+                if "intervention_ratio" in w_stats:
+                    wandb_log_dict.update(
+                        {
+                            "intervention_ratio": w_stats["intervention_ratio"],
+                            "intervention_weight": w_stats["intervention_weight"],
+                            "policy_base_weight": w_stats["policy_base_weight"],
+                        }
+                    )
+                else:
+                    # CombinedWeights: flatten provider stats
+                    for pkey, pstats in w_stats.items():
+                        for skey, sval in pstats.items():
+                            if isinstance(sval, int | float):
+                                wandb_log_dict[f"{pkey}/{skey}"] = sval
                 wandb_run.log(wandb_log_dict, step=step)
             train_tracker.reset_averages()
 
@@ -813,6 +916,32 @@ def main():
     )
     weight_group.add_argument(
         "--policy-base-weight", type=float, default=0.3, help="Loss weight for policy autonomy frames"
+    )
+
+    # Quality-conditioned BC
+    quality_group = parser.add_argument_group("Quality-conditioned BC")
+    quality_group.add_argument(
+        "--quality-prefix-mode",
+        action="store_true",
+        help="Enable quality prefix on task strings (e.g. '[expert] Pick up the cup')",
+    )
+    quality_group.add_argument(
+        "--inference-quality-prefix",
+        type=str,
+        default=None,
+        choices=["bad", "good", "expert"],
+        help="Quality prefix for policy inference during collection (e.g. 'expert')",
+    )
+    quality_group.add_argument(
+        "--quality-weight-mode",
+        action="store_true",
+        help="Enable quality-based loss weighting during post-training",
+    )
+    quality_group.add_argument(
+        "--quality-weights",
+        type=str,
+        default=None,
+        help='JSON mapping quality labels to weights, e.g. \'{"bad": 0.3, "good": 0.7, "expert": 1.0}\'',
     )
 
     # Output

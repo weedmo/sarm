@@ -18,8 +18,8 @@
 #     - Describe the full action sequence in order
 #     - Use consistent naming across episodes of the same task
 
-REPO_ID="weedmo/bimanual_so100_dataset_1"
-TASK="Perform a multi-stage manipulation: first open the drawstring bag by grasping and pulling its strings apart; then identify the two caramels aligned with the red line on the right, pick them up one by one, place them carefully inside the opened bag, and finally pull both ends of the string to close the bag tightly. Ensure each action is smooth and visually verified — the bag opening should be wide during placement and fully closed when finished."
+REPO_ID="weedmo/bimanual_so100_dataset_2"
+TASK=""   #"Perform a multi-stage manipulation: first open the drawstring bag by grasping and pulling its strings apart; then identify the two caramels aligned with the red line on the right, pick them up one by one, place them carefully inside the opened bag, and finally pull both ends of the string to close the bag tightly. Ensure each action is smooth and visually verified — the bag opening should be wide during placement and fully closed when finished."
 NUM_EPISODES=100
 FPS=30
 EPISODE_TIME=300    # max seconds per episode (press → to end early)
@@ -43,7 +43,6 @@ lerobot-record \
     }' \
     --dataset.single_task="$TASK"  \
     --dataset.repo_id="$REPO_ID" \
-    --resume=true \
     --dataset.num_episodes=$NUM_EPISODES \
     --dataset.fps=$FPS \
     --dataset.episode_time_s=$EPISODE_TIME \

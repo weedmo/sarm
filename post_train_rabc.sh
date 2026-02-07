@@ -10,8 +10,9 @@ python -m lerobot.policies.smolvla.post_train_smolvla \
     --dataset-repo-id weedmo/bimanual_merged \
     --rabc-progress-path /home/weed/.cache/huggingface/lerobot/weedmo/bimanual_merged/sarm_progress.parquet \
     --rename-map '{"observation.images.left_wrist":"observation.images.camera1","observation.images.right_head":"observation.images.camera2","observation.images.right_wrist":"observation.images.camera3"}' \
-    --steps 30000 \
+    --steps 7000 \
     --batch-size 8 \
-    --save-freq 5000 \
-    --log-freq 200 \
+    --save-freq 2000 \
+    --log-freq 100 \
+    --warmup-steps 300 \
     --wandb-project smolvla_rabc

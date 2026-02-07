@@ -118,22 +118,22 @@ def compute_temporal_proportions(
     """
     subtask_proportions: dict[str, list[float]] = {}
 
+    def _parse_timestamp_seconds(ts: str) -> float:
+        """Parse a timestamp string to seconds. Handles MM:SS, SS, and decimal formats."""
+        ts = ts.strip()
+        if ":" in ts:
+            parts = ts.split(":")
+            return float(parts[0]) * 60 + float(parts[1])
+        else:
+            return float(ts)
+
     for annotation in annotations.values():
         total_duration = 0
-        durations: dict[str, int] = {}
+        durations: dict[str, float] = {}
 
         for subtask in annotation.subtasks:
-            start_parts = subtask.timestamps.start.split(":")
-            end_parts = subtask.timestamps.end.split(":")
-
-            start_seconds = (
-                int(start_parts[0]) * 60 + int(start_parts[1])
-                if len(start_parts) == 2
-                else int(start_parts[0])
-            )
-            end_seconds = (
-                int(end_parts[0]) * 60 + int(end_parts[1]) if len(end_parts) == 2 else int(end_parts[0])
-            )
+            start_seconds = _parse_timestamp_seconds(subtask.timestamps.start)
+            end_seconds = _parse_timestamp_seconds(subtask.timestamps.end)
 
             duration = end_seconds - start_seconds
             durations[subtask.name] = duration
@@ -281,11 +281,11 @@ class VideoAnnotator:
             self.processor = processor
             print(f"Using shared model on {device}")
         else:
-            from transformers import AutoProcessor, Qwen3VLMoeForConditionalGeneration
+            from transformers import AutoModelForImageTextToText, AutoProcessor
 
             print(f"Loading model: {model_name}...")
 
-            self.model = Qwen3VLMoeForConditionalGeneration.from_pretrained(
+            self.model = AutoModelForImageTextToText.from_pretrained(
                 model_name, torch_dtype=torch_dtype, device_map=device, trust_remote_code=True
             )
 
@@ -468,12 +468,12 @@ def display_annotation(annotation: SubtaskAnnotation, episode_idx: int, fps: int
 
 
 def timestamp_to_seconds(timestamp: str) -> float:
-    """Convert MM:SS or SS timestamp to seconds"""
+    """Convert MM:SS, MM:SS.ms, or SS timestamp to seconds"""
     parts = timestamp.split(":")
     if len(parts) == 2:
-        return int(parts[0]) * 60 + int(parts[1])
+        return float(parts[0]) * 60 + float(parts[1])
     else:
-        return int(parts[0])
+        return float(parts[0])
 
 
 def extract_frame(video_path: Path, timestamp: float) -> np.ndarray | None:

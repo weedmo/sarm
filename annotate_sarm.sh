@@ -26,7 +26,7 @@ python -m lerobot.data_processing.sarm_annotations.subtask_annotation \
     --dense-only \
     --dense-subtasks "$DENSE_SUBTASKS" \
     --video-key "$VIDEO_KEY" \
-    --model Qwen/Qwen2.5-VL-7B-Instruct \
+    --model Qwen/Qwen2.5-VL-3B-Instruct \
     --device cuda \
     --dtype bfloat16 \
     --skip-existing \
